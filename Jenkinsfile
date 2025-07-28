@@ -54,7 +54,7 @@ pipeline {
             git config user.email "ankitp@heaptrace.com"
             git add .
             git commit -m "ci: update backend image to $IMAGE_TAG"
-            git push origin $GITOPS_BRANCH
+            git push https://$GIT_USER:$GIT_TOKEN@$GITOPS_REPO
           """
         }
       }
