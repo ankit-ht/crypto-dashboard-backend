@@ -43,6 +43,7 @@ pipeline {
         withCredentials([usernamePassword(credentialsId: 'github-creds', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
           script {
             sh """
+              rm -rf gitops
               echo "Cloning GitOps repo..."
               git clone -b $GITOPS_BRANCH https://$GIT_USER:$GIT_TOKEN@$GITOPS_REPO gitops
 
@@ -57,6 +58,9 @@ pipeline {
               git add .
               git commit -m "ci: update backend image to $IMAGE_TAG"
               git push https://$GIT_USER:$GIT_TOKEN@$GITOPS_REPO
+
+              echo "Removing local Docker image..."
+              docker rmi $ECR_REPO:$IMAGE_TAG || true
             """
           }
         }
