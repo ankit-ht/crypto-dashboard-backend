@@ -23,6 +23,7 @@ pipeline {
           env.IMAGE_TAG = IMAGE_TAG  
 
           sh """
+            cd server
             echo "Logging into ECR..."
             aws ecr get-login-password --region $AWS_REGION | \
               docker login --username AWS --password-stdin $ECR_REPO
