@@ -16,6 +16,7 @@ pipeline {
                 
                 script {
                     env.IMAGE_TAG = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+                    env.ECR_IMAGE  = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}"
                 }
             }
         }
@@ -24,10 +25,7 @@ pipeline {
             steps {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
                                   credentialsId: 'aws-jenkins-creds']]) {
-                    sh '''
-                        aws ecr get-login-password --region $AWS_REGION | \
-                        docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-                    '''
+                    sh 'aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com'
                 }
             }
         }
@@ -36,8 +34,8 @@ pipeline {
             steps {
                 dir('server') {
                     sh """
-                        docker build -t $ECR_REPO_NAME:$IMAGE_TAG .
-                        docker tag $ECR_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG
+                        docker build -t ${ECR_REPO_NAME}:${IMAGE_TAG} .
+                        docker tag ${ECR_REPO_NAME}:${IMAGE_TAG} ${ECR_IMAGE}
                     """
                 }
             }
@@ -45,17 +43,15 @@ pipeline {
 
         stage('Push Docker Image to ECR') {
             steps {
-                sh """
-                    docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG
-                """
+                sh "docker push ${ECR_IMAGE}"
             }
         }
 
         stage('Cleanup Local Docker Images') {
             steps {
                 sh """
-                    docker rmi $ECR_REPO_NAME:$IMAGE_TAG || true
-                    docker rmi $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG || true
+                    docker rmi ${ECR_REPO_NAME}:${IMAGE_TAG} || true
+                    docker rmi ${ECR_IMAGE} || true
                 """
             }
         }
@@ -64,29 +60,28 @@ pipeline {
             steps {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
                                   credentialsId: 'aws-jenkins-creds']]) {
-                    sh '''
-                        TASK_DEF_ARN=$(aws ecs describe-services \
+                    sh """
+                        TASK_DEF_ARN=\$(aws ecs describe-services \
                             --cluster my-ecs-cluster \
                             --services backend-service \
                             --query "services[0].taskDefinition" \
                             --output text)
 
-                        NEW_TASK_DEF=$(aws ecs register-task-definition \
-                            --cli-input-json "$(aws ecs describe-task-definition \
-                                --task-definition $TASK_DEF_ARN \
+                        NEW_TASK_DEF=\$(aws ecs register-task-definition \
+                            --cli-input-json "\$(aws ecs describe-task-definition \
+                                --task-definition \$TASK_DEF_ARN \
                                 --query 'taskDefinition | {family:family, containerDefinitions:containerDefinitions}' \
                                 --output json | \
-                                jq --arg IMAGE "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG" \
-                                   '.containerDefinitions[0].image=$IMAGE')" \
+                                jq --arg IMAGE \"$ECR_IMAGE\" '.containerDefinitions[0].image=\$IMAGE')" \
                             --query "taskDefinition.taskDefinitionArn" \
                             --output text)
 
                         aws ecs update-service \
                             --cluster my-ecs-cluster \
                             --service backend-service \
-                            --task-definition $NEW_TASK_DEF \
+                            --task-definition \$NEW_TASK_DEF \
                             --force-new-deployment
-                    '''
+                    """
                 }
             }
         }
@@ -94,10 +89,10 @@ pipeline {
 
     post {
         success {
-            echo "Deployment successful! Image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG"
+            echo " Deployment successful! Image: ${ECR_IMAGE}"
         }
         failure {
-            echo "Deployment failed!"
+            echo " Deployment failed!"
         }
     }
 }
