@@ -2,8 +2,8 @@ pipeline {
     agent any
 
     environment {
-        AWS_REGION = 'ap-south-1'
-        ECR_REPO_NAME = '016311861830.dkr.ecr.us-east-1.amazonaws.com/dev/crypto-backend'
+        AWS_REGION = 'us-east-1'
+        ECR_REPO_NAME = 'dev/crypto-backend'               // your ECR repo path
         ECS_CLUSTER = 'my-ecs-cluster'
         ECS_SERVICE = 'backend-service'
         ACCOUNT_ID = '016311861830'
@@ -12,11 +12,8 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
-                    git url: 'https://github.com/ankit-ht/crypto-dashboard-backend.git',
-                        branch: 'main',
-                        credentialsId: 'github-token'
-                }
+                // For public repo, no credentials needed
+                git url: 'https://github.com/ankit-ht/crypto-dashboard-backend.git', branch: 'main'
             }
         }
 
