@@ -1,4 +1,3 @@
-
 pipeline {
     agent any
 
@@ -6,18 +5,20 @@ pipeline {
         AWS_REGION     = "us-east-1"
         AWS_ACCOUNT_ID = "016311861830"
         ECR_REPO_NAME  = "dev/crypto-backend"
-        IMAGE_TAG      = "${GIT_COMMIT}"  // Use Git commit SHA as image tag
-        ECS_CLUSTER    = "my-ecs-cluster"
-        ECS_SERVICE    = "backend-service"
-        TASK_DEF_NAME  = "backend-task"  // your task definition family
     }
 
     stages {
         stage('Checkout') {
             steps {
+                // Checkout code from GitHub using PAT credentials
                 git branch: 'main',
                     url: 'https://github.com/ankit-ht/crypto-dashboard-backend.git',
                     credentialsId: 'github-token'
+                
+                // Save short commit SHA as Docker image tag
+                script {
+                    env.IMAGE_TAG = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+                }
             }
         }
 
@@ -33,46 +34,54 @@ pipeline {
             }
         }
 
-        stage('Build and Push Docker Image') {
+        stage('Build & Tag Docker Image') {
             steps {
-                sh '''
-                    cd server
-                    docker build -t $ECR_REPO_NAME:$IMAGE_TAG .
-                    docker tag $ECR_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG
-                    docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG
-                '''
+                dir('server') {
+                    sh """
+                        docker build -t $ECR_REPO_NAME:$IMAGE_TAG .
+                        docker tag $ECR_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG
+                    """
+                }
             }
         }
 
-        stage('Register New Task Definition') {
+        stage('Push Docker Image to ECR') {
+            steps {
+                sh """
+                    docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG
+                """
+            }
+        }
+
+        stage('Register New ECS Task Definition') {
             steps {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
                                   credentialsId: 'aws-jenkins-creds']]) {
                     sh '''
-                        NEW_TASK_DEF=$(aws ecs register-task-definition \
-                            --family $TASK_DEF_NAME \
-                            --container-definitions "[
-                                {
-                                    \\"name\\": \\"backend\\",
-                                    \\"image\\": \\"$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG\\",
-                                    \\"essential\\": true,
-                                    \\"memory\\": 512,
-                                    \\"cpu\\": 256,
-                                    \\"portMappings\\": [{\\"containerPort\\": 5000, \\"hostPort\\": 5000}]
-                                }
-                            ]" \
-                            --requires-compatibilities EC2 \
-                            --query 'taskDefinition.taskDefinitionArn' \
+                        # Fetch current task definition ARN
+                        TASK_DEF_ARN=$(aws ecs describe-services \
+                            --cluster my-ecs-cluster \
+                            --services backend-service \
+                            --query "services[0].taskDefinition" \
                             --output text)
 
-                        echo "New Task Definition ARN: $NEW_TASK_DEF"
+                        # Register new task definition with updated image
+                        NEW_TASK_DEF=$(aws ecs register-task-definition \
+                            --cli-input-json "$(aws ecs describe-task-definition \
+                                --task-definition $TASK_DEF_ARN \
+                                --query 'taskDefinition | {family:family, containerDefinitions:containerDefinitions}' \
+                                --output json | \
+                                jq --arg IMAGE "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG" \
+                                   '.containerDefinitions[0].image=$IMAGE')" \
+                            --query "taskDefinition.taskDefinitionArn" \
+                            --output text)
 
+                        # Update ECS service to use new task definition
                         aws ecs update-service \
-                            --cluster $ECS_CLUSTER \
-                            --service $ECS_SERVICE \
+                            --cluster my-ecs-cluster \
+                            --service backend-service \
                             --task-definition $NEW_TASK_DEF \
-                            --force-new-deployment \
-                            --region $AWS_REGION
+                            --force-new-deployment
                     '''
                 }
             }
@@ -81,10 +90,10 @@ pipeline {
 
     post {
         success {
-            echo 'Deployment successful!'
+            echo " Deployment successful! Image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG"
         }
         failure {
-            echo 'Deployment failed!'
+            echo " Deployment failed!"
         }
     }
 }
