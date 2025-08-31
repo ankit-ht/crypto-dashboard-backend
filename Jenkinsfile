@@ -52,30 +52,31 @@ pipeline {
                             returnStdout: true
                         ).trim()
 
-                        // Use jq to update the container image in the task definition JSON
-                        // Save updated container definitions to a variable
+                        // Update container image using jq
                         def newContainerDef = sh(
-                            script: "echo '$taskDefJson' | jq --arg IMAGE '$IMAGE_URI' '.taskDefinition.containerDefinitions[0].image = \$IMAGE | .taskDefinition.containerDefinitions'",
+                            script: "echo '$taskDefJson' | jq --arg IMAGE '$IMAGE_URI' '.taskDefinition.containerDefinitions[0].image = $IMAGE | .taskDefinition.containerDefinitions'",
                             returnStdout: true
                         ).trim()
 
-                        // Extract other required fields from the existing task definition
+                        // Extract fields from existing task definition
                         def family = sh(script: "echo '$taskDefJson' | jq -r '.taskDefinition.family'", returnStdout: true).trim()
                         def taskRoleArn = sh(script: "echo '$taskDefJson' | jq -r '.taskDefinition.taskRoleArn'", returnStdout: true).trim()
                         def executionRoleArn = sh(script: "echo '$taskDefJson' | jq -r '.taskDefinition.executionRoleArn'", returnStdout: true).trim()
                         def networkMode = sh(script: "echo '$taskDefJson' | jq -r '.taskDefinition.networkMode'", returnStdout: true).trim()
                         def volumes = sh(script: "echo '$taskDefJson' | jq '.taskDefinition.volumes'", returnStdout: true).trim()
                         def placementConstraints = sh(script: "echo '$taskDefJson' | jq '.taskDefinition.placementConstraints'", returnStdout: true).trim()
-                        def requiresCompatibilities = sh(script: "echo '$taskDefJson' | jq '.taskDefinition.requiresCompatibilities'", returnStdout: true).trim()
-                        def memory = "1024"  // 1GB memory as per your request
-                        // CPU omitted as requested
+                        def memory = "1024"  // 1GB memory as requested
 
-                        // Build new task definition JSON
+                        // Conditionally include taskRoleArn and executionRoleArn only if not null or "null"
+                        def taskRoleArnField = (taskRoleArn && taskRoleArn != "null") ? "\"taskRoleArn\": \"$taskRoleArn\"," : ""
+                        def executionRoleArnField = (executionRoleArn && executionRoleArn != "null") ? "\"executionRoleArn\": \"$executionRoleArn\"," : ""
+
+                        // Build new task definition JSON string
                         def newTaskDefJson = """
                         {
                             "family": "$family",
-                            "taskRoleArn": ${taskRoleArn == "null" ? "null" : "\"$taskRoleArn\""},
-                            "executionRoleArn": ${executionRoleArn == "null" ? "null" : "\"$executionRoleArn\""},
+                            ${taskRoleArnField}
+                            ${executionRoleArnField}
                             "networkMode": "$networkMode",
                             "containerDefinitions": $newContainerDef,
                             "volumes": $volumes,
@@ -99,7 +100,7 @@ pipeline {
 
                         echo "Registered new task definition revision: $newRevision"
 
-                        // Update ECS service to use new task definition revision
+                        // Update ECS service to use new task definition revision and force new deployment
                         sh """
                             aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --task-definition $TASK_DEF_NAME:$newRevision --region $AWS_REGION --force-new-deployment
                         """
