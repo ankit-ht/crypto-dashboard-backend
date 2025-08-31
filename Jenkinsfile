@@ -1,4 +1,3 @@
-
 pipeline {
     agent any
 
@@ -6,25 +5,24 @@ pipeline {
         AWS_REGION     = "us-east-1"
         AWS_ACCOUNT_ID = "016311861830"
         ECR_REPO_NAME  = "dev/crypto-backend"
-        IMAGE_TAG      = "${GIT_COMMIT}"  // Use Git commit SHA as image tag
         ECS_CLUSTER    = "my-ecs-cluster"
         ECS_SERVICE    = "backend-service"
-        TASK_DEF_NAME  = "backend-task"  // your task definition family
+        TASK_DEF_NAME  = "backend-task"  // your ECS task definition family name
+        IMAGE_TAG      = "${GIT_COMMIT}" // Use Git commit SHA as image tag
+        IMAGE_URI      = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${IMAGE_TAG}"
     }
 
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'main',
-                    url: 'https://github.com/ankit-ht/crypto-dashboard-backend.git',
-                    credentialsId: 'github-token'
+                // Public repo, no credentials needed
+                git branch: 'main', url: 'https://github.com/ankit-ht/crypto-dashboard-backend.git'
             }
         }
 
         stage('Login to AWS ECR') {
             steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
-                                  credentialsId: 'aws-jenkins-creds']]) {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-creds']]) {
                     sh '''
                         aws ecr get-login-password --region $AWS_REGION | \
                         docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
@@ -38,42 +36,74 @@ pipeline {
                 sh '''
                     cd server
                     docker build -t $ECR_REPO_NAME:$IMAGE_TAG .
-                    docker tag $ECR_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG
-                    docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG
+                    docker tag $ECR_REPO_NAME:$IMAGE_TAG $IMAGE_URI
+                    docker push $IMAGE_URI
                 '''
             }
         }
 
-        stage('Register New Task Definition') {
+        stage('Register New Task Definition and Deploy') {
             steps {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
-                                  credentialsId: 'aws-jenkins-creds']]) {
-                    sh '''
-                        NEW_TASK_DEF=$(aws ecs register-task-definition \
-                            --family $TASK_DEF_NAME \
-                            --container-definitions "[
-                                {
-                                    \\"name\\": \\"backend\\",
-                                    \\"image\\": \\"$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG\\",
-                                    \\"essential\\": true,
-                                    \\"memory\\": 512,
-                                    \\"cpu\\": 256,
-                                    \\"portMappings\\": [{\\"containerPort\\": 5000, \\"hostPort\\": 5000}]
-                                }
-                            ]" \
-                            --requires-compatibilities EC2 \
-                            --query 'taskDefinition.taskDefinitionArn' \
-                            --output text)
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-creds']]) {
+                    script {
+                        // Fetch current task definition JSON
+                        def taskDefJson = sh(
+                            script: "aws ecs describe-task-definition --task-definition $TASK_DEF_NAME --region $AWS_REGION",
+                            returnStdout: true
+                        ).trim()
 
-                        echo "New Task Definition ARN: $NEW_TASK_DEF"
+                        // Use jq to update the container image in the task definition JSON
+                        // Save updated container definitions to a variable
+                        def newContainerDef = sh(
+                            script: "echo '$taskDefJson' | jq --arg IMAGE '$IMAGE_URI' '.taskDefinition.containerDefinitions[0].image = \$IMAGE | .taskDefinition.containerDefinitions'",
+                            returnStdout: true
+                        ).trim()
 
-                        aws ecs update-service \
-                            --cluster $ECS_CLUSTER \
-                            --service $ECS_SERVICE \
-                            --task-definition $NEW_TASK_DEF \
-                            --force-new-deployment \
-                            --region $AWS_REGION
-                    '''
+                        // Extract other required fields from the existing task definition
+                        def family = sh(script: "echo '$taskDefJson' | jq -r '.taskDefinition.family'", returnStdout: true).trim()
+                        def taskRoleArn = sh(script: "echo '$taskDefJson' | jq -r '.taskDefinition.taskRoleArn'", returnStdout: true).trim()
+                        def executionRoleArn = sh(script: "echo '$taskDefJson' | jq -r '.taskDefinition.executionRoleArn'", returnStdout: true).trim()
+                        def networkMode = sh(script: "echo '$taskDefJson' | jq -r '.taskDefinition.networkMode'", returnStdout: true).trim()
+                        def volumes = sh(script: "echo '$taskDefJson' | jq '.taskDefinition.volumes'", returnStdout: true).trim()
+                        def placementConstraints = sh(script: "echo '$taskDefJson' | jq '.taskDefinition.placementConstraints'", returnStdout: true).trim()
+                        def requiresCompatibilities = sh(script: "echo '$taskDefJson' | jq '.taskDefinition.requiresCompatibilities'", returnStdout: true).trim()
+                        def memory = "1024"  // 1GB memory as per your request
+                        // CPU omitted as requested
+
+                        // Build new task definition JSON
+                        def newTaskDefJson = """
+                        {
+                            "family": "$family",
+                            "taskRoleArn": ${taskRoleArn == "null" ? "null" : "\"$taskRoleArn\""},
+                            "executionRoleArn": ${executionRoleArn == "null" ? "null" : "\"$executionRoleArn\""},
+                            "networkMode": "$networkMode",
+                            "containerDefinitions": $newContainerDef,
+                            "volumes": $volumes,
+                            "placementConstraints": $placementConstraints,
+                            "requiresCompatibilities": [],
+                            "memory": "$memory"
+                        }
+                        """
+
+                        // Write new task definition JSON to file
+                        writeFile file: 'new-task-def.json', text: newTaskDefJson
+
+                        // Register new task definition revision
+                        def registerOutput = sh(
+                            script: "aws ecs register-task-definition --cli-input-json file://new-task-def.json --region $AWS_REGION",
+                            returnStdout: true
+                        ).trim()
+
+                        def registerJson = readJSON text: registerOutput
+                        def newRevision = registerJson.taskDefinition.revision
+
+                        echo "Registered new task definition revision: $newRevision"
+
+                        // Update ECS service to use new task definition revision
+                        sh """
+                            aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --task-definition $TASK_DEF_NAME:$newRevision --region $AWS_REGION --force-new-deployment
+                        """
+                    }
                 }
             }
         }
