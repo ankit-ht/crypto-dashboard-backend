@@ -9,7 +9,9 @@ import passport from "passport";
 import kPassport from "./middleware/passport";
 import cookieParser from "cookie-parser";
 import cors from "cors";
+import healthCheckRoutes from './routes/healthCheckRoutes';
 const app = express();
+
 app.use(
   cors({ origin: [process.env.FRONTEND_URL as string], credentials: true })
 );
@@ -19,9 +21,13 @@ app.use(cookieParser());
 app.use(passport.initialize());
 kPassport(passport);
 
+// Health check should be before the 404 handler
+app.use('/api/health', healthCheckRoutes); // Mount the health check routes
+
 app.use("/", exampleRoute);
 app.use("/user", userRoute);
 
+// 404 handler should be at the end
 app.use(() => {
   throw createHttpError(404, "Route not found");
 });
