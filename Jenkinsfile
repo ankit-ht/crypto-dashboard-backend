@@ -12,16 +12,21 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                git url: 'https://github.com/ankit-ht/crypto-dashboard-backend.git', branch: 'main'
+                git url: 'https://github.com/<your-public-repo>.git', branch: 'main'
             }
         }
 
         stage('Build Docker Image') {
             steps {
                 script {
-                    // Use Git SHA short as tag
-                    IMAGE_TAG = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    // Git short SHA as image tag
+                    def IMAGE_TAG = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+                    
+                    // Build Docker image (adjust path if Dockerfile is in subfolder)
                     sh "docker build -t ${ECR_REPO}:${IMAGE_TAG} ."
+                    
+                    // Save IMAGE_TAG to env for later stages
+                    env.IMAGE_TAG = IMAGE_TAG
                 }
             }
         }
@@ -36,7 +41,7 @@ pipeline {
 
         stage('Push Docker Image') {
             steps {
-                sh "docker push ${ECR_REPO}:${IMAGE_TAG}"
+                sh "docker push ${ECR_REPO}:${env.IMAGE_TAG}"
             }
         }
 
@@ -44,9 +49,9 @@ pipeline {
             steps {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-creds']]) {
                     script {
-                        // Register new task definition revision with updated image
+                        // Update ECS task definition with new image
                         sh """
-                        sed -i 's|\"image\": \".*\"|\"image\": \"${ECR_REPO}:${IMAGE_TAG}\"|' ecs-task-def.json
+                        sed -i 's|\"image\": \".*\"|\"image\": \"${ECR_REPO}:${env.IMAGE_TAG}\"|' ecs-task-def.json
                         aws ecs register-task-definition --cli-input-json file://ecs-task-def.json
                         aws ecs update-service --cluster ${ECS_CLUSTER} --service ${ECS_SERVICE} --task-definition ${TASK_DEFINITION}
                         """
@@ -58,7 +63,7 @@ pipeline {
 
     post {
         success {
-            echo "Deployment successful: ${ECR_REPO}:${IMAGE_TAG}"
+            echo "Deployment successful: ${ECR_REPO}:${env.IMAGE_TAG}"
         }
         failure {
             echo "Deployment failed!"
