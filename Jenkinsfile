@@ -87,17 +87,6 @@ pipeline {
             }
         }
 
-        stage('Record Deployment Details') {
-            steps {
-                sh """
-                    printf "Last Deployment Details:\\nCommit ID: %s\\nBranch: %s\\nTimestamp: %s\\nDeployed changes.\\n" \
-                    "\$(git rev-parse HEAD)" "\$(git rev-parse --abbrev-ref HEAD)" "\$(date +"%Y-%m-%d %T")" \
-                    > /home/ubuntu/last_deployment.txt
-                """
-            }
-        }
-    }
-
     post {
         success {
             echo "Deployment successful! Image: ${ECR_IMAGE}"
