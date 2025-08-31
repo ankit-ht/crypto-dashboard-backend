@@ -1,103 +1,90 @@
+
 pipeline {
     agent any
 
     environment {
-        AWS_REGION = 'us-east-1' // your AWS region
-        ECR_REPO = '016311861830.dkr.ecr.us-east-1.amazonaws.com/dev/crypto-backend' // your ECR repo name
-        ECS_CLUSTER = 'my-ecs-cluster'
-        ECS_SERVICE = 'backend-service'
-        AWS_ACCOUNT_ID = '016311861830' // your AWS account ID
-        IMAGE_TAG = "${env.BUILD_NUMBER}"
-        IMAGE_URI = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
-        GIT_REPO = 'https://github.com/ankit-ht/crypto-dashboard-backend.git' // your public GitHub repo URL
-        GIT_BRANCH = 'main' // branch to checkout
+        AWS_REGION     = "us-east-1"
+        AWS_ACCOUNT_ID = "016311861830"
+        ECR_REPO_NAME  = "dev/crypto-backend"
+        IMAGE_TAG      = "${GIT_COMMIT}"  // Use Git commit SHA as image tag
+        ECS_CLUSTER    = "my-ecs-cluster"
+        ECS_SERVICE    = "backend-service"
+        TASK_DEF_NAME  = "backend-task"  // your task definition family
     }
 
     stages {
         stage('Checkout') {
             steps {
-                git branch: "${GIT_BRANCH}", url: "${GIT_REPO}"
+                git branch: 'main',
+                    url: 'https://github.com/ankit-ht/crypto-dashboard-backend.git',
+                    credentialsId: 'github-token'
             }
         }
 
-        stage('Build Docker Image') {
+        stage('Login to AWS ECR') {
             steps {
-                script {
-                    dockerImage = docker.build("${ECR_REPO}:${IMAGE_TAG}", "server/")
-                }
-            }
-        }
-
-        stage('Login to ECR and Push Image') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'aws-jenkins-creds', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                                  credentialsId: 'aws-jenkins-creds']]) {
                     sh '''
-                    export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                    export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                    export AWS_DEFAULT_REGION=${AWS_REGION}
-
-                    aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
-
-                    docker tag ${ECR_REPO}:${IMAGE_TAG} ${IMAGE_URI}
-                    docker push ${IMAGE_URI}
+                        aws ecr get-login-password --region $AWS_REGION | \
+                        docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
                     '''
                 }
             }
         }
 
-        stage('Update ECS Task Definition and Deploy') {
+        stage('Build and Push Docker Image') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'aws-jenkins-creds', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
-                    script {
-                        sh '''
-                        export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                        export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                        export AWS_DEFAULT_REGION=${AWS_REGION}
-                        '''
+                sh '''
+                    cd server
+                    docker build -t $ECR_REPO_NAME:$IMAGE_TAG .
+                    docker tag $ECR_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG
+                    docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG
+                '''
+            }
+        }
 
-                        def taskDefJson = sh (
-                            script: "aws ecs describe-task-definition --task-definition ${ECS_SERVICE} --region ${AWS_REGION}",
-                            returnStdout: true
-                        ).trim()
+        stage('Register New Task Definition') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                                  credentialsId: 'aws-jenkins-creds']]) {
+                    sh '''
+                        NEW_TASK_DEF=$(aws ecs register-task-definition \
+                            --family $TASK_DEF_NAME \
+                            --container-definitions "[
+                                {
+                                    \\"name\\": \\"backend\\",
+                                    \\"image\\": \\"$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG\\",
+                                    \\"essential\\": true,
+                                    \\"memory\\": 512,
+                                    \\"cpu\\": 256,
+                                    \\"portMappings\\": [{\\"containerPort\\": 5000, \\"hostPort\\": 5000}]
+                                }
+                            ]" \
+                            --requires-compatibilities EC2 \
+                            --query 'taskDefinition.taskDefinitionArn' \
+                            --output text)
 
-                        def taskDef = readJSON text: taskDefJson
-                        def containerDefs = taskDef.taskDefinition.containerDefinitions
+                        echo "New Task Definition ARN: $NEW_TASK_DEF"
 
-                        containerDefs.each { containerDef ->
-                            containerDef.image = IMAGE_URI
-                        }
-
-                        def newTaskDef = [
-                            family: taskDef.taskDefinition.family,
-                            taskRoleArn: taskDef.taskDefinition.taskRoleArn,
-                            executionRoleArn: taskDef.taskDefinition.executionRoleArn,
-                            networkMode: taskDef.taskDefinition.networkMode,
-                            containerDefinitions: containerDefs,
-                            volumes: taskDef.taskDefinition.volumes,
-                            placementConstraints: taskDef.taskDefinition.placementConstraints,
-                            requiresCompatibilities: taskDef.taskDefinition.requiresCompatibilities,
-                            cpu: taskDef.taskDefinition.cpu,
-                            memory: taskDef.taskDefinition.memory
-                        ]
-
-                        writeJSON file: 'new-task-def.json', json: newTaskDef, pretty: 4
-
-                        def registerOutput = sh (
-                            script: "aws ecs register-task-definition --cli-input-json file://new-task-def.json --region ${AWS_REGION}",
-                            returnStdout: true
-                        ).trim()
-
-                        def registerJson = readJSON text: registerOutput
-                        def newRevision = registerJson.taskDefinition.revision
-
-                        echo "Registered new task definition revision: ${newRevision}"
-
-                        sh """
-                        aws ecs update-service --cluster ${ECS_CLUSTER} --service ${ECS_SERVICE} --task-definition ${ECS_SERVICE}:${newRevision} --region ${AWS_REGION}
-                        """
-                    }
+                        aws ecs update-service \
+                            --cluster $ECS_CLUSTER \
+                            --service $ECS_SERVICE \
+                            --task-definition $NEW_TASK_DEF \
+                            --force-new-deployment \
+                            --region $AWS_REGION
+                    '''
                 }
             }
+        }
+    }
+
+    post {
+        success {
+            echo 'Deployment successful!'
+        }
+        failure {
+            echo 'Deployment failed!'
         }
     }
 }
