@@ -19,13 +19,8 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    // Git short SHA as image tag
                     def IMAGE_TAG = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
-                    
-                    // Build Docker image (adjust path if Dockerfile is in subfolder)
-                    sh "docker build -t ${ECR_REPO}:${IMAGE_TAG} ."
-                    
-                    // Save IMAGE_TAG to env for later stages
+                    sh "docker build -t ${ECR_REPO}:${IMAGE_TAG} ./server"
                     env.IMAGE_TAG = IMAGE_TAG
                 }
             }
@@ -49,7 +44,6 @@ pipeline {
             steps {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-creds']]) {
                     script {
-                        // Update ECS task definition with new image
                         sh """
                         sed -i 's|\"image\": \".*\"|\"image\": \"${ECR_REPO}:${env.IMAGE_TAG}\"|' ecs-task-def.json
                         aws ecs register-task-definition --cli-input-json file://ecs-task-def.json
