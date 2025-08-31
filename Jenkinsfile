@@ -13,7 +13,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
-                    git url: 'https://github.com/username/repo.git',
+                    git url: 'https://github.com/ankit-ht/crypto-dashboard-backend.git',
                         branch: 'main',
                         credentialsId: 'github-token'
                 }
