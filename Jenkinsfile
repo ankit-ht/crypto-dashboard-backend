@@ -45,8 +45,17 @@ pipeline {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-creds']]) {
                     script {
                         sh """
-                        sed -i 's|\"image\": \".*\"|\"image\": \"${ECR_REPO}:${env.IMAGE_TAG}\"|' ecs-task-def.json
-                        aws ecs register-task-definition --cli-input-json file://ecs-task-def.json
+                        # Fetch current task definition
+                        TASK_DEF_JSON=\$(aws ecs describe-task-definition --task-definition ${TASK_DEFINITION})
+                        
+                        # Update container image dynamically using jq
+                        NEW_TASK_DEF=\$(echo \$TASK_DEF_JSON | jq --arg IMAGE "${ECR_REPO}:${env.IMAGE_TAG}" \
+                          '.taskDefinition.containerDefinitions[0].image = \$IMAGE | {family: .taskDefinition.family, containerDefinitions: .taskDefinition.containerDefinitions, executionRoleArn: .taskDefinition.executionRoleArn, networkMode: .taskDefinition.networkMode, requiresCompatibilities: .taskDefinition.requiresCompatibilities, cpu: .taskDefinition.cpu, memory: .taskDefinition.memory}')
+                        
+                        # Register new revision
+                        aws ecs register-task-definition --cli-input-json "\$NEW_TASK_DEF"
+                        
+                        # Update ECS service
                         aws ecs update-service --cluster ${ECS_CLUSTER} --service ${ECS_SERVICE} --task-definition ${TASK_DEFINITION}
                         """
                     }
