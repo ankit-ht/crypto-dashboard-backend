@@ -5,13 +5,16 @@ pipeline {
         AWS_REGION     = "us-east-1"
         AWS_ACCOUNT_ID = "016311861830"
         ECR_REPO_NAME  = "dev/crypto-backend"
-        IMAGE_TAG      = "${GIT_COMMIT}"
+        IMAGE_TAG      = "${GIT_COMMIT}"  // Use Git commit SHA as image tag
     }
 
     stages {
         stage('Checkout') {
             steps {
-                git branch: 'main', url: 'https://github.com/ankit-ht/crypto-dashboard-backend.git'
+                // Checkout using GitHub PAT stored in Jenkins
+                git branch: 'main',
+                    url: 'https://github.com/ankit-ht/crypto-dashboard-backend.git',
+                    credentialsId: 'github-token'  // GitHub PAT credentials ID
             }
         }
 
