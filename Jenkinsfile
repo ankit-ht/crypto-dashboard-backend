@@ -56,30 +56,36 @@ pipeline {
             }
         }
 
-        stage('Register New ECS Task Definition') {
+        stage('Deploy ECS with New Task Definition') {
             steps {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
                                   credentialsId: 'aws-jenkins-creds']]) {
                     sh """
+                        # Get current task definition ARN
                         TASK_DEF_ARN=\$(aws ecs describe-services \
                             --cluster my-ecs-cluster \
                             --services backend-service \
                             --query "services[0].taskDefinition" \
                             --output text)
 
-                        NEW_TASK_DEF=\$(aws ecs register-task-definition \
-                            --cli-input-json "\$(aws ecs describe-task-definition \
-                                --task-definition \$TASK_DEF_ARN \
-                                --query 'taskDefinition | {family:family, containerDefinitions:containerDefinitions}' \
-                                --output json | \
-                                jq --arg IMAGE \"$ECR_IMAGE\" '.containerDefinitions[0].image=\$IMAGE')" \
+                        # Create new task definition JSON with updated image
+                        NEW_TASK_DEF_JSON=\$(aws ecs describe-task-definition \
+                            --task-definition \$TASK_DEF_ARN \
+                            --query 'taskDefinition | {family:family, containerDefinitions:containerDefinitions}' \
+                            --output json | \
+                            jq --arg IMAGE "$ECR_IMAGE" '.containerDefinitions[0].image=$IMAGE')
+
+                        # Register new task definition
+                        NEW_TASK_DEF_ARN=\$(aws ecs register-task-definition \
+                            --cli-input-json "\$NEW_TASK_DEF_JSON" \
                             --query "taskDefinition.taskDefinitionArn" \
                             --output text)
 
+                        # Update ECS service with new task definition
                         aws ecs update-service \
                             --cluster my-ecs-cluster \
                             --service backend-service \
-                            --task-definition \$NEW_TASK_DEF \
+                            --task-definition \$NEW_TASK_DEF_ARN \
                             --force-new-deployment
                     """
                 }
@@ -89,10 +95,10 @@ pipeline {
 
     post {
         success {
-            echo " Deployment successful! Image: ${ECR_IMAGE}"
+            echo "Deployment successful! Image: ${ECR_IMAGE}"
         }
         failure {
-            echo " Deployment failed!"
+            echo "Deployment failed!"
         }
     }
 }
