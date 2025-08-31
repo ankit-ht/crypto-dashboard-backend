@@ -10,12 +10,10 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                // Checkout code from GitHub using PAT credentials
                 git branch: 'main',
                     url: 'https://github.com/ankit-ht/crypto-dashboard-backend.git',
                     credentialsId: 'github-token'
                 
-                // Save short commit SHA as Docker image tag
                 script {
                     env.IMAGE_TAG = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
                 }
@@ -53,19 +51,26 @@ pipeline {
             }
         }
 
+        stage('Cleanup Local Docker Images') {
+            steps {
+                sh """
+                    docker rmi $ECR_REPO_NAME:$IMAGE_TAG || true
+                    docker rmi $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG || true
+                """
+            }
+        }
+
         stage('Register New ECS Task Definition') {
             steps {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
                                   credentialsId: 'aws-jenkins-creds']]) {
                     sh '''
-                        # Fetch current task definition ARN
                         TASK_DEF_ARN=$(aws ecs describe-services \
                             --cluster my-ecs-cluster \
                             --services backend-service \
                             --query "services[0].taskDefinition" \
                             --output text)
 
-                        # Register new task definition with updated image
                         NEW_TASK_DEF=$(aws ecs register-task-definition \
                             --cli-input-json "$(aws ecs describe-task-definition \
                                 --task-definition $TASK_DEF_ARN \
@@ -76,7 +81,6 @@ pipeline {
                             --query "taskDefinition.taskDefinitionArn" \
                             --output text)
 
-                        # Update ECS service to use new task definition
                         aws ecs update-service \
                             --cluster my-ecs-cluster \
                             --service backend-service \
@@ -90,10 +94,10 @@ pipeline {
 
     post {
         success {
-            echo " Deployment successful! Image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG"
+            echo "Deployment successful! Image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG"
         }
         failure {
-            echo " Deployment failed!"
+            echo "Deployment failed!"
         }
     }
 }
