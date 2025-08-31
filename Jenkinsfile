@@ -1,70 +1,71 @@
 pipeline {
-  agent any
+    agent any
 
-  environment {
-    AWS_REGION     = 'us-east-1'
-    ECR_REPO       = '016311861830.dkr.ecr.us-east-1.amazonaws.com/dev/ecom-backend'
-    GITOPS_REPO    = 'github.com/ankit-ht/gitops-e-commerce.git'   // Only domain+path, used in https://$GIT_USER:$GIT_TOKEN@...
-    GITOPS_BRANCH  = 'main'
-  }
-
-  stages {
-    stage('Checkout Code') {
-      steps {
-        git url: 'https://github.com/ankit-ht/e-commerce.git', branch: 'main'
-      }
+    environment {
+        AWS_REGION     = "us-east-1"
+        AWS_ACCOUNT_ID = "016311861830"
+        ECR_REPO_NAME  = "dev/crypto-backend"
+        IMAGE_TAG      = "${GIT_COMMIT}"
     }
 
-    stage('Build and Push Docker Image') {
-      steps {
-        script {
-          def imageTag = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
-          env.IMAGE_TAG = imageTag
-
-          sh """
-            cd server
-
-            echo "Logging into ECR..."
-            aws ecr get-login-password --region $AWS_REGION | \
-              docker login --username AWS --password-stdin $ECR_REPO
-
-            echo "Building Docker image..."
-            docker build -t $ECR_REPO:$IMAGE_TAG .
-
-            echo "Pushing Docker image..."
-            docker push $ECR_REPO:$IMAGE_TAG
-          """
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/ankit-ht/crypto-dashboard-backend.git'
+            }
         }
-      }
-    }
 
-    stage('Update GitOps Repo') {
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'github-creds', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
-          script {
-            sh """
-              rm -rf gitops
-              echo "Cloning GitOps repo..."
-              git clone -b $GITOPS_BRANCH https://$GIT_USER:$GIT_TOKEN@$GITOPS_REPO gitops
-
-              cd gitops/base/ecom-backend
-
-              echo "Updating image tag in kustomization.yaml..."
-              kustomize edit set image $ECR_REPO=$ECR_REPO:$IMAGE_TAG
-
-              git config user.name "jenkins"
-              git config user.email "ankitp@heaptrace.com"
-
-              git add .
-              git commit -m "ci: update backend image to $IMAGE_TAG"
-              git push https://$GIT_USER:$GIT_TOKEN@$GITOPS_REPO
-
-              echo "Removing local Docker image..."
-              docker rmi $ECR_REPO:$IMAGE_TAG || true
-            """
-          }
+        stage('Login to AWS ECR') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                                  credentialsId: 'aws-jenkins-creds']]) {
+                    sh '''
+                        aws ecr get-login-password --region $AWS_REGION | \
+                        docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+                    '''
+                }
+            }
         }
-      }
+
+        stage('Build Docker Image') {
+            steps {
+                sh '''
+                    docker build -t $ECR_REPO_NAME:$IMAGE_TAG .
+                    docker tag $ECR_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG
+                '''
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                sh '''
+                    docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG
+                '''
+            }
+        }
+
+        stage('Deploy to ECS') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding',
+                                  credentialsId: 'aws-jenkins-creds']]) {
+                    sh '''
+                        aws ecs update-service \
+                            --cluster my-ecs-cluster \
+                            --service backend-service \
+                            --force-new-deployment \
+                            --region $AWS_REGION
+                    '''
+                }
+            }
+        }
     }
-  }
+
+    post {
+        success {
+            echo 'Deployment successful!'
+        }
+        failure {
+            echo 'Deployment failed!'
+        }
+    }
 }
