@@ -33,6 +33,7 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 sh '''
+                    cd server
                     docker build -t $ECR_REPO_NAME:$IMAGE_TAG .
                     docker tag $ECR_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPO_NAME:$IMAGE_TAG
                 '''
