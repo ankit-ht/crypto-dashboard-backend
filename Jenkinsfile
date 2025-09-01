@@ -22,10 +22,8 @@ pipeline {
                     // Get short git SHA for tagging
                     def IMAGE_TAG = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
                     
-                    // Build Docker image from server/ folder
                     sh "docker build -t ${ECR_REPO}:${IMAGE_TAG} ./server"
-                    
-                    // Export IMAGE_TAG for later stages
+                    ges
                     env.IMAGE_TAG = IMAGE_TAG
                 }
             }
@@ -50,7 +48,6 @@ pipeline {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-creds']]) {
                     script {
                         sh """
-                        # Fetch current ECS task definition
                         TASK_DEF_JSON=\$(aws ecs describe-task-definition --task-definition ${TASK_DEFINITION})
 
                         # Update only the container image, keep memory/cpu/secrets intact
